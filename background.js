@@ -903,6 +903,7 @@ async function handleMessage(message, sender) {
         throw new Error('自动流程运行中，当前不能手动修改邮箱。');
       }
       await setEmailState(message.payload.email);
+      await resumeAutoRun();
       return { ok: true, email: message.payload.email };
     }
 
@@ -913,6 +914,7 @@ async function handleMessage(message, sender) {
         throw new Error('自动流程运行中，当前不能手动获取 Duck 邮箱。');
       }
       const email = await fetchDuckEmail(message.payload || {});
+      await resumeAutoRun();
       return { ok: true, email };
     }
 
@@ -1258,15 +1260,22 @@ async function autoRunLoop(totalRuns, options = {}) {
   autoRunAttemptRun = 0;
   const autoRunSkipFailures = Boolean(options.autoRunSkipFailures);
   const initialMode = options.mode === 'continue' ? 'continue' : 'restart';
+  const resumeCurrentRun = Number.isInteger(options.resumeCurrentRun) ? options.resumeCurrentRun : 0;
+  const resumeSuccessfulRuns = Number.isInteger(options.resumeSuccessfulRuns) ? options.resumeSuccessfulRuns : 0;
+  const resumeAttemptRunsProcessed = Number.isInteger(options.resumeAttemptRunsProcessed) ? options.resumeAttemptRunsProcessed : 0;
   const maxAttempts = autoRunSkipFailures ? Math.max(totalRuns * 10, totalRuns + 20) : totalRuns;
-  let successfulRuns = 0;
-  let attemptRuns = 0;
+  let successfulRuns = Math.max(0, resumeSuccessfulRuns);
+  let attemptRuns = Math.max(0, resumeAttemptRunsProcessed);
   let forceFreshTabsNextRun = false;
   let continueCurrentOnFirstAttempt = initialMode === 'continue';
 
   await setState({
     autoRunSkipFailures,
-    ...getAutoRunStatusPayload('running', { currentRun: 0, totalRuns, attemptRun: 0 }),
+    ...getAutoRunStatusPayload('running', {
+      currentRun: resumeCurrentRun,
+      totalRuns,
+      attemptRun: resumeAttemptRunsProcessed,
+    }),
   });
 
   while (successfulRuns < totalRuns && attemptRuns < maxAttempts) {
@@ -1429,9 +1438,36 @@ async function resumeAutoRun() {
   const state = await getState();
   if (!state.email) {
     await addLog('无法继续：当前没有邮箱地址，请先在侧边栏填写邮箱。', 'error');
-    return;
+    return false;
   }
-  await resumeAutoRunIfWaitingForEmail({ silent: true });
+
+  const resumedInMemory = await resumeAutoRunIfWaitingForEmail({ silent: true });
+  if (resumedInMemory) {
+    return true;
+  }
+
+  if (!isAutoRunPausedState(state)) {
+    return false;
+  }
+
+  if (autoRunActive) {
+    return false;
+  }
+
+  const totalRuns = state.autoRunTotalRuns || 1;
+  const currentRun = state.autoRunCurrentRun || 1;
+  const attemptRun = state.autoRunAttemptRun || 1;
+  const successfulRuns = Math.max(0, currentRun - 1);
+
+  await addLog('检测到自动流程暂停上下文已丢失，正在从当前进度恢复自动运行...', 'warn');
+  autoRunLoop(totalRuns, {
+    autoRunSkipFailures: Boolean(state.autoRunSkipFailures),
+    mode: 'continue',
+    resumeCurrentRun: currentRun,
+    resumeSuccessfulRuns: successfulRuns,
+    resumeAttemptRunsProcessed: Math.max(0, attemptRun - 1),
+  });
+  return true;
 }
 
 // ============================================================
