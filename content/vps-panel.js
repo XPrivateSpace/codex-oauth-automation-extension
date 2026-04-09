@@ -77,8 +77,20 @@ function getActionText(el) {
 }
 
 function getStatusBadgeElement() {
-  const candidates = document.querySelectorAll('.status-badge');
-  return Array.from(candidates).find(isVisibleElement) || null;
+  const selectors = [
+    '#root > div > div > div > main > div > div > div > div > div:nth-child(1) > div > div.OAuthPage-module__cardContent___1sXLA > div.status-badge',
+    '#root .OAuthPage-module__cardContent___1sXLA > .status-badge',
+    '.OAuthPage-module__cardContent___1sXLA > .status-badge',
+    '.status-badge',
+  ];
+
+  for (const selector of selectors) {
+    const candidates = document.querySelectorAll(selector);
+    const visible = Array.from(candidates).find(isVisibleElement);
+    if (visible) return visible;
+  }
+
+  return null;
 }
 
 function getStatusBadgeText() {
