@@ -1269,14 +1269,16 @@ async function step5_fillNameBirthday(payload) {
       hiddenBirthday.dispatchEvent(new Event('change', { bubbles: true }));
       log(`步骤 5：已设置隐藏生日输入框：${dateStr}`);
     }
-  } else if (ageInput) {
+  }
+  if (ageInput) {
     if (resolvedAge == null || Number.isNaN(Number(resolvedAge))) {
       throw new Error('检测到年龄字段，但未提供年龄数据。');
     }
     await humanPause(500, 1300);
     fillInput(ageInput, String(resolvedAge));
     log(`步骤 5：年龄已填写：${resolvedAge}`);
-  } else {
+  } 
+  if (!birthdayMode && !ageInput) {
     throw new Error('未找到生日或年龄输入项。URL: ' + location.href);
   }
 
