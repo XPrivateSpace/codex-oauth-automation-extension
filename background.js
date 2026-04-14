@@ -3388,24 +3388,47 @@ function getEmailGeneratorLabel(generator) {
 }
 
 function generateCloudflareAliasLocalPart() {
-  const letters = 'abcdefghijklmnopqrstuvwxyz';
-  const digits = '0123456789';
-  const chars = [];
+  const partsA = [
+    'crook', 'mild', 'urban', 'tiny', 'fresh', 'brisk', 'plain', 'silent',
+    'rapid', 'lucky', 'noble', 'smart', 'calm', 'clear', 'steady', 'bright',
+    'solid', 'crisp', 'royal', 'quick', 'daily', 'happy', 'green', 'cool',
+    'prime', 'clean', 'sharp', 'kind', 'open', 'swift', 'wise', 'sunny',
+    'amber', 'basic', 'bold', 'active', 'epic', 'safe', 'soft', 'new',
+  ];
+  const partsB = [
+    'tag', 'note', 'mail', 'user', 'cloud', 'stone', 'bridge', 'field',
+    'point', 'pixel', 'draft', 'path', 'line', 'mark', 'leaf', 'spark',
+    'box', 'lane', 'grid', 'vault', 'post', 'link', 'thread', 'zone',
+    'plane', 'track', 'scope', 'signal', 'record', 'token', 'stream', 'forge',
+    'frame', 'portal', 'label', 'index', 'route', 'map', 'quest', 'base',
+  ];
+  const partsC = [
+    'multiple', 'daily', 'simple', 'direct', 'global', 'silver', 'native', 'stable',
+    'future', 'basic', 'public', 'normal', 'formal', 'modern', 'active', 'gentle',
+    'open', 'bright', 'secure', 'quick', 'smart', 'vivid', 'strong', 'clean',
+    'silent', 'rapid', 'honest', 'crystal', 'golden', 'royal', 'special', 'static',
+    'central', 'random', 'cosmic', 'fresh', 'mobile', 'linear', 'narrow', 'plain',
+  ];
+  const partsD = [
+    'alpha', 'beta', 'north', 'south', 'east', 'west', 'prime', 'core',
+    'plus', 'edge', 'mini', 'max', 'lite', 'wave', 'hub', 'kit',
+  ];
 
-  for (let i = 0; i < 6; i++) {
-    chars.push(letters[Math.floor(Math.random() * letters.length)]);
+  const pick = (list) => list[Math.floor(Math.random() * list.length)];
+  const segments = [pick(partsA), pick(partsB), pick(partsC)];
+
+  if (Math.random() < 0.3) {
+    segments.push(pick(partsD));
   }
 
-  for (let i = 0; i < 4; i++) {
-    chars.push(digits[Math.floor(Math.random() * digits.length)]);
+  let localPart = segments.join('-');
+
+  if (Math.random() < 0.35) {
+    const suffix = Math.floor(10 + Math.random() * 90);
+    localPart = `${localPart}-${suffix}`;
   }
 
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-
-  return chars.join('');
+  return localPart;
 }
 
 async function fetchCloudflareEmail(state, options = {}) {
@@ -4889,7 +4912,8 @@ async function executeStep4(state) {
 
   await resolveVerificationStep(4, state, mail, {
     filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
-    requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
+    // requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
+    requestFreshCodeFirst: false
   });
   return;
 }
@@ -5018,7 +5042,8 @@ async function runStep7Attempt(state) {
 
   await resolveVerificationStep(7, state, mail, {
     filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
-    requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
+    // requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
+    requestFreshCodeFirst: false
   });
 }
 
