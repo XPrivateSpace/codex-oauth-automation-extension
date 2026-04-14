@@ -65,7 +65,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   sub2apiPassword: '',
   sub2apiGroupName: DEFAULT_SUB2API_GROUP_NAME,
   customPassword: '',
-  autoRunSkipFailures: true,
+  autoRunSkipFailures: false,
   autoRunFallbackThreadIntervalMinutes: 0,
   autoRunDelayEnabled: false,
   autoRunDelayMinutes: 30,
@@ -204,7 +204,7 @@ function normalizeScheduledAutoRunPlan(plan) {
 
   return {
     totalRuns: normalizeRunCount(plan.totalRuns),
-    autoRunSkipFailures: true,
+    autoRunSkipFailures: Boolean(plan.autoRunSkipFailures),
     mode: plan.mode === 'continue' ? 'continue' : 'restart',
   };
 }
@@ -2520,7 +2520,7 @@ async function launchScheduledAutoRun(trigger = 'alarm') {
       'info'
     );
     startAutoRunLoop(plan.totalRuns, {
-      autoRunSkipFailures: true,
+      autoRunSkipFailures: Boolean(plan.autoRunSkipFailures),
       mode: plan.mode,
     });
     return true;
@@ -2836,7 +2836,7 @@ async function handleMessage(message, sender) {
         throw new Error('已有自动运行倒计时计划，请先取消或立即开始。');
       }
       const totalRuns = normalizeRunCount(message.payload?.totalRuns || 1);
-      const autoRunSkipFailures = true;
+      const autoRunSkipFailures = Boolean(message.payload?.autoRunSkipFailures);
       const mode = message.payload?.mode === 'continue' ? 'continue' : 'restart';
       await setState({ autoRunSkipFailures });
       startAutoRunLoop(totalRuns, { autoRunSkipFailures, mode });
@@ -2848,7 +2848,7 @@ async function handleMessage(message, sender) {
       const totalRuns = normalizeRunCount(message.payload?.totalRuns || 1);
       return await scheduleAutoRun(totalRuns, {
         delayMinutes: message.payload?.delayMinutes,
-        autoRunSkipFailures: true,
+        autoRunSkipFailures: Boolean(message.payload?.autoRunSkipFailures),
         mode: message.payload?.mode,
       });
     }
@@ -4048,6 +4048,41 @@ async function logAutoRunFinalSummary(totalRuns, roundSummaries = []) {
   }
 }
 
+async function waitBetweenAutoRunRounds(targetRun, totalRuns, roundSummary) {
+  if (totalRuns <= 1 || targetRun >= totalRuns) {
+    return;
+  }
+
+  const fallbackThreadIntervalMinutes = normalizeAutoRunFallbackThreadIntervalMinutes(
+    (await getState()).autoRunFallbackThreadIntervalMinutes
+  );
+  if (fallbackThreadIntervalMinutes <= 0) {
+    return;
+  }
+
+  const statusLabel = roundSummary?.status === 'failed' ? '失败' : '完成';
+  await addLog(
+    `线程间隔：第 ${targetRun}/${totalRuns} 轮已${statusLabel}，等待 ${fallbackThreadIntervalMinutes} 分钟后开始下一轮。`,
+    'info'
+  );
+  await sleepWithStop(fallbackThreadIntervalMinutes * 60 * 1000);
+}
+
+async function waitBeforeAutoRunRetry(targetRun, totalRuns, nextAttemptRun) {
+  const fallbackThreadIntervalMinutes = normalizeAutoRunFallbackThreadIntervalMinutes(
+    (await getState()).autoRunFallbackThreadIntervalMinutes
+  );
+  if (fallbackThreadIntervalMinutes <= 0) {
+    return;
+  }
+
+  await addLog(
+    `线程间隔：等待 ${fallbackThreadIntervalMinutes} 分钟后开始第 ${targetRun}/${totalRuns} 轮第 ${nextAttemptRun} 次尝试。`,
+    'info'
+  );
+  await sleepWithStop(fallbackThreadIntervalMinutes * 60 * 1000);
+}
+
 async function handleAutoRunLoopUnhandledError(error) {
   console.error(LOG_PREFIX, 'Auto run loop crashed:', error);
   if (!isStopError(error)) {
@@ -4082,7 +4117,7 @@ async function autoRunLoop(totalRuns, options = {}) {
   autoRunTotalRuns = totalRuns;
   autoRunCurrentRun = 0;
   autoRunAttemptRun = 0;
-  const autoRunSkipFailures = true;
+  const autoRunSkipFailures = Boolean(options.autoRunSkipFailures);
   const initialMode = options.mode === 'continue' ? 'continue' : 'restart';
   const resumeCurrentRun = Number.isInteger(options.resumeCurrentRun) && options.resumeCurrentRun > 0
     ? Math.min(totalRuns, options.resumeCurrentRun)
@@ -4125,10 +4160,14 @@ async function autoRunLoop(totalRuns, options = {}) {
 
   for (let targetRun = resumeCurrentRun; targetRun <= totalRuns; targetRun += 1) {
     const roundSummary = roundSummaries[targetRun - 1];
-    let attemptRun = continueCurrentOnFirstAttempt && targetRun === resumeCurrentRun ? resumeAttemptRun : 1;
-    let reuseExistingProgress = continueCurrentOnFirstAttempt && targetRun === resumeCurrentRun;
+    const resumingCurrentRound = continueCurrentOnFirstAttempt && targetRun === resumeCurrentRun;
+    let attemptRun = resumingCurrentRound ? resumeAttemptRun : 1;
+    let reuseExistingProgress = resumingCurrentRound;
+    const maxAttemptsForRound = autoRunSkipFailures
+      ? AUTO_RUN_MAX_RETRIES_PER_ROUND + 1
+      : Math.max(1, attemptRun);
 
-    while (attemptRun <= AUTO_RUN_MAX_RETRIES_PER_ROUND + 1) {
+    while (attemptRun <= maxAttemptsForRound) {
       autoRunCurrentRun = targetRun;
       autoRunAttemptRun = attemptRun;
       roundSummary.attempts = attemptRun;
@@ -4230,7 +4269,7 @@ async function autoRunLoop(totalRuns, options = {}) {
 
         const reason = getErrorMessage(err);
         roundSummary.failureReasons.push(reason);
-        const canRetry = attemptRun <= AUTO_RUN_MAX_RETRIES_PER_ROUND;
+        const canRetry = autoRunSkipFailures && attemptRun < maxAttemptsForRound;
 
         await setState({
           autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
@@ -4270,6 +4309,21 @@ async function autoRunLoop(totalRuns, options = {}) {
             }
             throw sleepError;
           }
+          try {
+            await waitBeforeAutoRunRetry(targetRun, totalRuns, attemptRun + 1);
+          } catch (sleepError) {
+            if (isStopError(sleepError)) {
+              stoppedEarly = true;
+              await addLog(`第 ${targetRun}/${totalRuns} 轮已被用户停止`, 'warn');
+              await broadcastAutoRunStatus('stopped', {
+                currentRun: targetRun,
+                totalRuns,
+                attemptRun,
+              });
+              break;
+            }
+            throw sleepError;
+          }
           attemptRun += 1;
           reuseExistingProgress = false;
           continue;
@@ -4280,8 +4334,25 @@ async function autoRunLoop(totalRuns, options = {}) {
         await setState({
           autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
         });
+        if (!autoRunSkipFailures) {
+          cancelPendingCommands('当前轮执行失败。');
+          await broadcastStopToContentScripts();
+          await addLog('自动重试未开启，自动运行将在当前失败后停止。', 'warn');
+          stoppedEarly = true;
+          await broadcastAutoRunStatus('stopped', {
+            currentRun: targetRun,
+            totalRuns,
+            attemptRun,
+          });
+          break;
+        }
         await addLog(`第 ${targetRun}/${totalRuns} 轮最终失败：${reason}`, 'error');
-        await addLog(`第 ${targetRun}/${totalRuns} 轮已达到 ${AUTO_RUN_MAX_RETRIES_PER_ROUND} 次重试上限，继续下一轮。`, 'warn');
+        await addLog(
+          targetRun < totalRuns
+            ? `第 ${targetRun}/${totalRuns} 轮已达到 ${AUTO_RUN_MAX_RETRIES_PER_ROUND} 次重试上限，继续下一轮。`
+            : `第 ${targetRun}/${totalRuns} 轮已达到 ${AUTO_RUN_MAX_RETRIES_PER_ROUND} 次重试上限，本次自动运行结束。`,
+          'warn'
+        );
         cancelPendingCommands('当前轮已达到重试上限。');
         await broadcastStopToContentScripts();
         forceFreshTabsNextRun = true;
@@ -4294,6 +4365,22 @@ async function autoRunLoop(totalRuns, options = {}) {
 
     if (stoppedEarly) {
       break;
+    }
+
+    try {
+      await waitBetweenAutoRunRounds(targetRun, totalRuns, roundSummary);
+    } catch (sleepError) {
+      if (isStopError(sleepError)) {
+        stoppedEarly = true;
+        await addLog(`第 ${targetRun}/${totalRuns} 轮已被用户停止`, 'warn');
+        await broadcastAutoRunStatus('stopped', {
+          currentRun: targetRun,
+          totalRuns,
+          attemptRun: autoRunAttemptRun,
+        });
+        break;
+      }
+      throw sleepError;
     }
   }
 
@@ -4356,7 +4443,7 @@ async function resumeAutoRun() {
 
   await addLog('检测到自动流程暂停上下文已丢失，正在从当前进度恢复自动运行...', 'warn');
   startAutoRunLoop(totalRuns, {
-    autoRunSkipFailures: true,
+    autoRunSkipFailures: Boolean(state.autoRunSkipFailures),
     mode: 'continue',
     resumeCurrentRun: currentRun,
     resumeAttemptRun: attemptRun,
